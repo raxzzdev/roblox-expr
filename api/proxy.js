@@ -1,46 +1,45 @@
-export default async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Access-Control-Expose-Headers', 'x-csrf-token, X-CSRF-Token');
+export const config = { runtime: 'edge' };
 
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'Missing ?url= parameter' });
-    }
+export default async function handler(req) {
+    const url = new URL(req.url);
+    const target = url.searchParams.get('url');
+    if (!target) return new Response('Missing ?url=', { status: 400 });
 
     try {
-        const targetUrl = decodeURIComponent(url);
-        const forwardHeaders = {};
-        const allowedHeaders = ['cookie', 'x-csrf-token', 'content-type', 'user-agent'];
-        for (const h of allowedHeaders) {
-            if (req.headers[h]) forwardHeaders[h] = req.headers[h];
+        const forwardHeaders = new Headers();
+        for (const h of ['cookie', 'x-csrf-token', 'content-type', 'user-agent']) {
+            const v = req.headers.get(h);
+            if (v) forwardHeaders.set(h, v);
         }
 
-        let body = undefined;
-        if (req.method === 'POST' && req.body) {
-            body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-        }
+        let body = null;
+        if (req.method === 'POST') body = await req.text();
 
-        const response = await fetch(targetUrl, {
+        const resp = await fetch(decodeURIComponent(target), {
             method: req.method,
             headers: forwardHeaders,
             body,
         });
 
-        const contentType = response.headers.get('content-type') || 'application/json';
-        const csrfToken = response.headers.get('x-csrf-token');
+        const respHeaders = new Headers();
+        respHeaders.set('Access-Control-Allow-Origin', '*');
+        respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        respHeaders.set('Access-Control-Allow-Headers', '*');
+        respHeaders.set('Access-Control-Expose-Headers', 'x-csrf-token, X-CSRF-Token');
 
-        if (csrfToken) res.setHeader('X-CSRF-Token', csrfToken);
-        res.setHeader('Content-Type', contentType);
+        const ct = resp.headers.get('content-type');
+        if (ct) respHeaders.set('Content-Type', ct);
 
-        const data = await response.text();
-        return res.status(response.status).send(data);
-    } catch (error) {
-        return res.status(500).json({ error: error.message });
+        for (const [k, v] of resp.headers.entries()) {
+            if (k.toLowerCase() === 'x-csrf-token') respHeaders.set('X-CSRF-Token', v);
+        }
+
+        const respBody = await resp.arrayBuffer();
+        return new Response(respBody, { status: resp.status, headers: respHeaders });
+    } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
     }
-                  }
+}
